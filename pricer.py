@@ -30,20 +30,38 @@ class Decision:
     reason: str
 
 
+def _sticker_rate(price_usd: float) -> float:
+    """
+    Look up the discount rate for a single sticker by its reference price in USD.
+    Uses the CONFIG.sticker_tiers list of (ceiling_usd, rate) pairs.
+    Returns 0.0 if the sticker is below CONFIG.sticker_min_value_usd.
+    """
+    if price_usd < CONFIG.sticker_min_value_usd:
+        return 0.0
+    for ceiling, rate in CONFIG.sticker_tiers:
+        if price_usd <= ceiling:
+            return rate
+    return 0.0  # fallback — should not be reached if last tier is (inf, x)
+
+
 def _sticker_value(item: dict) -> float:
     """
-    Sum the discounted sticker values from an item dict.
+    Sum the tiered discounted sticker values from an item dict.
     Each sticker may have a 'reference_price' in cents.
     Returns USD value to add to the reference price.
+
+    Stickers below sticker_min_value_usd are ignored entirely (0% recovery).
+    Higher-value stickers use progressively higher recovery rates reflecting
+    real buyer willingness to pay a premium on a 5-10 day flip horizon.
     """
-    if CONFIG.sticker_discount <= 0:
-        return 0.0
     stickers = item.get("stickers") or []
     total = 0.0
     for s in stickers:
         ref_cents = s.get("reference_price") or 0
         if ref_cents > 0:
-            total += (ref_cents / 100.0) * CONFIG.sticker_discount
+            price_usd = ref_cents / 100.0
+            rate = _sticker_rate(price_usd)
+            total += price_usd * rate
     return round(total, 4)
 
 
@@ -111,9 +129,13 @@ def evaluate_listing(listing: dict) -> Decision:
     if float_val < CONFIG.min_float or float_val > CONFIG.max_float:
         return reject(f"Float {float_val:.6f} out of range [{CONFIG.min_float}, {CONFIG.max_float}]")
 
-    # --- Adjusted reference price (stickers + float premium) ---
+    # --- Adjusted reference price (float premium first, then sticker value) ---
+    # Float premium is applied to the skin's base reference price only.
+    # Sticker value is independent of float and is added after the multiplier.
+    # Applying the multiplier to (ref + sticker) would incorrectly inflate
+    # the sticker contribution by the float premium.
     sticker_val  = _sticker_value(item)
-    adj_ref      = _apply_float_premium(ref_usd + sticker_val, float_val)
+    adj_ref      = _apply_float_premium(ref_usd, float_val) + sticker_val
 
     if sticker_val > 0:
         log.debug(
@@ -123,7 +145,8 @@ def evaluate_listing(listing: dict) -> Decision:
     if CONFIG.low_float_threshold > 0 and float_val < CONFIG.low_float_threshold:
         log.debug(
             f"  [{item_name}] low-float bonus (float={float_val:.6f})  "
-            f"ref ${ref_usd + sticker_val:.2f} → adj ${adj_ref:.2f}"
+            f"base ref ${ref_usd:.2f} → float-adj ${_apply_float_premium(ref_usd, float_val):.2f} "
+            f"(+stickers ${sticker_val:.2f} → total adj ${adj_ref:.2f})"
         )
 
     # --- Price check (against adjusted ref) ---
@@ -134,9 +157,11 @@ def evaluate_listing(listing: dict) -> Decision:
         )
 
     # --- Profit check ---
-    target_sell_usd = adj_ref * CONFIG.sell_target
-    fee             = target_sell_usd * CONFIG.csfloat_fee
-    expected_profit = target_sell_usd - fee - ask_usd
+    # Use conservative sell estimate (93% of target) to match backtester sell_variance_min
+    target_sell_usd     = adj_ref * CONFIG.sell_target
+    conservative_sell   = target_sell_usd * 0.93
+    fee                 = conservative_sell * CONFIG.csfloat_fee
+    expected_profit     = conservative_sell - fee - ask_usd
 
     if expected_profit < CONFIG.min_profit_usd:
         return reject(
@@ -151,7 +176,7 @@ def evaluate_listing(listing: dict) -> Decision:
         reference_price_usd=ref_usd,
         adjusted_ref_usd=round(adj_ref, 2),
         target_sell_usd=round(target_sell_usd, 2),
-        expected_profit_usd=round(expected_profit, 2),
+        expected_profit_usd=round(expected_profit, 2),  # conservative (93% sell variance applied)
         sticker_value_usd=sticker_val,
         float_value=float_val,
         reason="OK",

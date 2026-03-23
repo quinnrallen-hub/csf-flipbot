@@ -60,7 +60,7 @@ class PaperPortfolio:
         held_h = (datetime.now() - pos["bought_at"]).total_seconds() / 3600
 
         price_ok = current_price >= pos["list_price"]
-        timed_out = held_h >= CONFIG.max_sell_hours
+        timed_out = held_h >= 168.0  # 7 days — matches backtester max_sell_days
 
         if price_ok or timed_out:
             sell_price = pos["list_price"] * rng.uniform(0.93, 1.0) if price_ok else current_price
@@ -142,11 +142,11 @@ def run_paper_trade(
     buy_threshold: float = 0.85,
     sell_target: float = 0.95,
     csf_factor: float = 0.88,
-    competition_rate: float = 0.35,
+    competition_rate: float = 0.18,
     max_trades_day: int = 3,
     reference_window: int = 30,
-    min_volume: int = 3,
-    dump_days: int = 3,
+    min_volume: int = 10,
+    dump_days: int = 6,
 ):
     log.info("=" * 60)
     log.info("CSFloat Paper Trader — SIMULATION MODE (no real money)")

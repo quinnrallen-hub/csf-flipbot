@@ -142,7 +142,7 @@ class PaperPortfolio:
         timed_out = held_h >= max_hold_hours
 
         if price_ok or timed_out:
-            sell    = pos["list_price"] * rng.uniform(0.95, 1.0) if price_ok else current_price
+            sell    = pos["list_price"] * rng.uniform(0.93, 1.0) if price_ok else current_price
             fee     = sell * CSFLOAT_FEE
             profit  = sell - fee - pos["buy_price"]
             self.balance += sell - fee
@@ -179,9 +179,9 @@ def run(
     balance:          float = 200.0,
     buy_threshold:    float = 0.85,
     sell_target:      float = 0.95,
-    reference_ticks:  int   = 4,     # polls needed to build reference (4 × 10min = 40min)
+    reference_ticks:  int   = 12,    # polls needed to build reference (12 × 10min = 2hr window)
     poll_interval:    int   = 600,   # seconds between polls (10 min)
-    competition_rate: float = 0.35,
+    competition_rate: float = 0.18,
     max_trades_per_poll: int = 2,
     min_quantity:     int   = 5,     # min active Skinport listings
     min_profit:       float = 0.50,
@@ -247,9 +247,9 @@ def run(
                 log.debug(f"  SKIP {name[:45]} — low qty ({quantity})")
                 continue
 
-            slippage   = rng.uniform(1.0, 1.03)
+            slippage   = rng.uniform(1.0, 1.04)
             buy_price  = current_price * slippage
-            list_price = ref_price * sell_target * rng.uniform(0.94, 1.0)
+            list_price = ref_price * sell_target * rng.uniform(0.93, 1.0)
             fee        = list_price * CSFLOAT_FEE
             expected   = list_price - fee - buy_price
 
@@ -283,8 +283,8 @@ if __name__ == "__main__":
     p.add_argument("--sell",     type=float, default=0.95)
     p.add_argument("--interval", type=int,   default=600,
                    help="Poll interval seconds (default 600 = 10min)")
-    p.add_argument("--window",   type=int,   default=4,
-                   help="Reference window in polls (default 4 = 40min warmup)")
+    p.add_argument("--window",   type=int,   default=12,
+                   help="Reference window in polls (default 12 = 2hr warmup)")
     args = p.parse_args()
 
     try:

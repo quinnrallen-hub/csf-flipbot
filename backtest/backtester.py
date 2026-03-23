@@ -56,15 +56,17 @@ class BacktestConfig:
     # CSFloat listings average ~88% of Steam Market price
     csf_price_factor: float = 0.88
     # Chance your bot actually wins the listing before competitors (0.0-1.0)
-    competition_catch_rate: float = 0.35
+    # Real CS2 flip market has heavy bot competition; 15-20% is realistic for liquid skins
+    competition_catch_rate: float = 0.18
     # Random buy slippage: you pay slightly above the floor (1.0-1.05)
     buy_slippage_max: float = 1.04
     # Sell price variance: your listing sells at target × this (0.92-1.0)
     sell_variance_min: float = 0.93
-    # Min daily volume to consider an item liquid enough to trade
-    min_daily_volume: int = 3
+    # Min daily Steam Market volume — CSFloat is ~10-20% of Steam, so need 10+ Steam sales/day
+    min_daily_volume: int = 10
     # If price stays below buy_threshold for this many days → permanent dump, skip
-    dump_confirm_days: int = 3
+    # CS2 prices can stay depressed 5-10 days during case releases before recovering
+    dump_confirm_days: int = 6
 
     # Filter to specific skins (empty = all)
     whitelist_names: list = field(default_factory=list)

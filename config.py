@@ -9,7 +9,7 @@ class Config:
 
     # --- Buy thresholds ---
     # Buy if listing price <= reference_price * buy_threshold
-    buy_threshold: float = 0.82          # only buy at 82% or below (best deals only)
+    buy_threshold: float = 0.87          # buy at 87% or below — matches backtested optimum
     min_profit_usd: float = 3.00         # minimum profit in USD after fees
     csfloat_fee: float = 0.02            # CSFloat takes 2% on sale
 
@@ -40,10 +40,29 @@ class Config:
     min_reference_price_usd: float = 1.00
 
     # --- Sticker pricing ---
-    # Stickers on a skin are worth a fraction of their face value.
-    # 0.15 = count stickers at 15% of their CSFloat reference price.
-    # Set to 0.0 to ignore stickers entirely.
-    sticker_discount: float = 0.15
+    # Stickers contribute a tiered fraction of their CSFloat reference price.
+    # Tiers are checked in order; the first matching ceiling is used.
+    # Any sticker below sticker_min_value_usd contributes $0 (ignored entirely).
+    #
+    # Real-world recovery rates for a 5-10 day flip window:
+    #   < $1.00  -> 0%   (no buyer pays extra for cheap stickers)
+    #   $1-$5    -> 7%   (budget crafts, nearly zero resale premium)
+    #   $5-$30   -> 12%  (mid-tier stickers, modest premium)
+    #   $30-$100 -> 18%  (recognizable stickers, Cologne/Katowice lower-tier holos)
+    #   $100+    -> 25%  (iconic stickers: Kato 2014, iBP, Crown foil, etc.)
+    #
+    # Set sticker_min_value_usd=0.0 and all tiers to the same value to restore
+    # the old flat-rate behaviour.
+    sticker_min_value_usd: float = 1.00   # stickers below this are ignored ($0)
+    sticker_tiers: list = field(default_factory=lambda: [
+        # (price_ceiling_usd, discount_rate)
+        # Evaluated top-to-bottom; first ceiling >= sticker price wins.
+        (5.00,   0.07),
+        (30.00,  0.12),
+        (100.00, 0.18),
+        (200.00, 0.25),
+        (float("inf"), 0.50),
+    ])
 
     # --- Float premium ---
     # Apply a bonus multiplier to the reference price for items with a very
