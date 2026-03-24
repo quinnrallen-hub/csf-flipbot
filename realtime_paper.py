@@ -32,10 +32,6 @@ FETCH_INTERVAL    = 300    # refresh Steam prices every 5 min
 TRADE_INTERVAL    = 10     # evaluate positions every 10s
 DISCORD_INTERVAL  = 600    # Discord status every 10 min
 PRICE_HISTORY_MAX = 20     # rolling window: keep last N price observations per item
-MIN_OBSERVATIONS  = 1      # only need 1 cycle since we seed medians at startup
-# Simulated deal rate: CSFloat has ~3 underpriced listings/hr across a 1000-item universe
-# (calibrated from backtest: 86 opportunities / 60 days = ~1.4/hr on 30 items → ~3/hr on 1000)
-DEAL_RATE = 3.0
 
 # URL-encoded Steam category tags — rifles, pistols, snipers, knives, SMGs, gloves
 WEAPON_CATEGORIES = (
@@ -245,14 +241,13 @@ def send_discord(portfolio, cycle):
 
 
 def run(balance=2000.0, buy_threshold=0.87, sell_target=0.98,
-        competition_rate=0.35, min_profit=1.00, pages=10):
+        competition_rate=0.35, min_profit=1.00, pages=5):
     log.info("=" * 70)
-    log.info("CSFloat Paper Trader  (Steam Market ref + simulated CSFloat deal rate)")
-    log.info(f"  buy_threshold : {buy_threshold:.0%}  of Steam median × csf_factor")
-    log.info(f"  sell_target   : {sell_target:.0%}  of Steam median × csf_factor")
-    log.info(f"  csf_factor    : {CSF_PRICE_FACTOR:.0%}  (Steam prices scaled to CSFloat levels)")
-    log.info(f"  competition   : {competition_rate:.0%}  win rate on simulated deals")
-    log.info(f"  deal_rate     : {DEAL_RATE}/hr  across all tracked items")
+    log.info("CSFloat Paper Trader  (real Steam dip detection)")
+    log.info(f"  buy_threshold : {buy_threshold:.0%}  of Steam 24h median × {CSF_PRICE_FACTOR}")
+    log.info(f"  sell_target   : {sell_target:.0%}  of Steam 24h median × {CSF_PRICE_FACTOR}")
+    log.info(f"  competition   : {competition_rate:.0%}  catch rate (backtest-calibrated)")
+    log.info(f"  max per trade : 10% of daily start balance")
     log.info(f"  tracking      : up to {pages * 100} items  (top popular weapon skins)")
     log.info("=" * 70)
 
@@ -273,18 +268,14 @@ def run(balance=2000.0, buy_threshold=0.87, sell_target=0.98,
         history.update(prices)
         log.info(f"  Found {len(prices)} items")
 
-    # Step 2: fetch real 24h median from priceoverview for each item,
-    # seed history with MIN_OBSERVATIONS copies so ratio detection works immediately
+    # Step 2: fetch real 24h median from priceoverview for each item.
+    # Seed history with the real median so the reference is accurate from tick 1.
     if prices:
-        log.info(f"Seeding — step 2: fetching 24h medians ({len(prices)} items, ~{len(prices) * 1.2:.0f}s)...")
-        medians = fetch_median_prices(list(prices.keys()))
+        log.info(f"Seeding — step 2: fetching 24h medians ({len(prices)} items, ~{len(prices) * 0.8:.0f}s)...")
+        medians = fetch_median_prices(list(prices.keys()), delay=0.8)
         seeded = 0
         for name, median_usd in medians.items():
-            # Fill history with MIN_OBSERVATIONS copies of the real median
-            for _ in range(MIN_OBSERVATIONS):
-                history.data[name].append(median_usd)
-            if len(history.data[name]) > PRICE_HISTORY_MAX:
-                history.data[name] = history.data[name][-PRICE_HISTORY_MAX:]
+            history.data[name] = [median_usd] * 3   # seed with 3 copies for stable median
             seeded += 1
         log.info(f"  Seeded {seeded}/{len(prices)} items with real 24h medians")
 
@@ -300,19 +291,19 @@ def run(balance=2000.0, buy_threshold=0.87, sell_target=0.98,
             daily_start = portfolio.balance
             log.info(f"  New day — daily start ${daily_start:.2f}")
 
-        max_spend = daily_start * 0.25   # up to 25% of daily start per item
+        max_spend = daily_start * 0.10   # max 10% of daily start per trade
 
-        # Fetch fresh prices on interval
+        # Refresh Steam prices every 5 min
         if now_ts - last_fetch >= FETCH_INTERVAL or prices is None:
             cycle += 1
-            log.info(f"\n[{datetime.now().strftime('%H:%M:%S')}] Cycle #{cycle} — fetching {pages} pages from Steam Market...")
+            log.info(f"\n[{datetime.now().strftime('%H:%M:%S')}] Cycle #{cycle} — refreshing prices...")
             fresh = fetch_steam_market(pages=pages)
             if fresh:
                 prices = fresh
                 history.update(prices)
-                ready = sum(1 for n in prices if history.ready(n))
                 last_fetch = now_ts
-                log.info(f"  {len(prices)} items  |  {ready} ready for trading  |  warming up: {min(cycle, MIN_OBSERVATIONS)}/{MIN_OBSERVATIONS} cycles")
+                ready = sum(1 for n in prices if history.ready(n))
+                log.info(f"  {len(prices)} items tracked  |  {ready} with reference prices")
             else:
                 log.warning("  Fetch failed — reusing cached prices")
 
@@ -321,33 +312,32 @@ def run(balance=2000.0, buy_threshold=0.87, sell_target=0.98,
             time.sleep(TRADE_INTERVAL)
             continue
 
-        # deal_prob: probability per item per tick of a simulated CSFloat underpriced listing
-        deal_prob = DEAL_RATE / (3600 / TRADE_INTERVAL)
+        # Check open positions for exits
+        for name in list(portfolio.positions.keys()):
+            d = prices.get(name)
+            if d:
+                csf_ref = (history.median(name) or d["price"]) * CSF_PRICE_FACTOR
+                portfolio.try_sell(name, csf_ref, rng)
 
-        # Evaluate all tracked items
+        # Real dip detection: compare current Steam price to seeded 24h median
         for name, d in list(prices.items()):
-            if not history.ready(name):
-                continue
-
             steam_median = history.median(name)
             if not steam_median:
                 continue
-            ref_price = steam_median * CSF_PRICE_FACTOR   # CSFloat-equivalent reference
 
-            # Try to sell open positions (pass ref as current market price)
-            portfolio.try_sell(name, ref_price, rng)
+            # Scale both to CSFloat-equivalent prices
+            csf_current = d["price"] * CSF_PRICE_FACTOR
+            csf_ref     = steam_median * CSF_PRICE_FACTOR
 
-            # Simulate a CSFloat underpriced listing appearing this tick
-            # Uses real Steam median as the value anchor — deal price is below threshold
-            if rng.random() > deal_prob:
+            # Only buy if current price is a real dip vs the 24h median
+            ratio = csf_current / csf_ref
+            if ratio > buy_threshold:
                 continue
             if d["listings"] < 3:
                 continue
 
-            cur_price  = ref_price * rng.uniform(0.75, buy_threshold - 0.01)
-            slippage   = rng.uniform(1.0, 1.03)
-            buy_price  = cur_price * slippage
-            list_price = ref_price * sell_target * rng.uniform(0.95, 1.0)
+            buy_price  = csf_current * rng.uniform(1.0, 1.03)  # slippage
+            list_price = csf_ref * sell_target * rng.uniform(0.95, 1.0)
             fee        = list_price * CSFLOAT_FEE
             expected   = list_price - fee - buy_price
 
@@ -359,9 +349,11 @@ def run(balance=2000.0, buy_threshold=0.87, sell_target=0.98,
                 continue
             if name in portfolio.positions:
                 continue
+            # Competition: ~35% of real dip listings get filled before the bot
             if rng.random() > competition_rate:
                 continue
 
+            log.info(f"  DIP  {name[:50]}  ratio={ratio:.0%}  csf=${csf_current:.2f}  ref=${csf_ref:.2f}")
             portfolio.buy(name, round(buy_price, 2), round(list_price, 2))
 
         # Status + Discord every 10 min
@@ -378,7 +370,7 @@ if __name__ == "__main__":
     p.add_argument("--balance", type=float, default=2000.0)
     p.add_argument("--buy",     type=float, default=0.87)
     p.add_argument("--sell",    type=float, default=0.98)
-    p.add_argument("--pages",   type=int,   default=10)
+    p.add_argument("--pages",   type=int,   default=5)
     args = p.parse_args()
     try:
         run(balance=args.balance, buy_threshold=args.buy, sell_target=args.sell, pages=args.pages)
